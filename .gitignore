@@ -1,0 +1,7 @@
+/.vscode
+/.cache
+/.idea
+/build
+/doxygen-docs
+/cmake-build-debug
+/cmake-build-release
