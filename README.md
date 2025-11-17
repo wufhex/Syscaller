@@ -7,7 +7,7 @@
 	<br>
 </div>
 
-## 📦 Overview
+## Overview
 
 Syscaller is a minimal, dependency‑free, CRT-less C++ library that dynamically resolves and executes Windows Native API system calls.
 It works by parsing a system DLLs (e.g., ntdll.dll) to extract syscall IDs at runtime, then generating a small executable stub containing a raw syscall instruction.
@@ -17,7 +17,7 @@ Because syscall numbers are resolved dynamically, Syscaller avoids the problem o
 
 Compatible with x64 Windows, using the kernel’s syscall calling convention (R10 for the first argument).
 
-## ⚙️ Documentation
+## Documentation
 
 ```cpp
 /**
@@ -44,7 +44,7 @@ auto pFn = MAKE_SYSCALLEX(dll, name, type)
 auto pFn = MAKE_SYSCALLEX("win32u.dll", "NtUserWaitMessage", func_t)
 ```
 
-## 🚀 Quick Example
+## Quick Example
 
 ```cpp
 #include "syscaller/syscaller.hpp"
