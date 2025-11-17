@@ -103,7 +103,7 @@ int MainEntry() {
 }
 ```
 
-## 🧾 License
+## License
 
 Syscaller is free for personal and commercial use under the MIT License.
 You can use, modify, and integrate it into your engine or tools.
