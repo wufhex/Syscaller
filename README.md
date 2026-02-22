@@ -42,6 +42,29 @@ auto pFn = MAKE_SYSCALL("NtCreateFile", func_t)
  */
 auto pFn = MAKE_SYSCALLEX(dll, name, type)
 auto pFn = MAKE_SYSCALLEX("win32u.dll", "NtUserWaitMessage", func_t)
+
+/**
+ * @brief Retrieves a system call from ntdll.dll using indirect execution.
+ *
+ * @param name The name of the system call.
+ * @param type The function signature/type of the system call.
+ *
+ * @return Pointer to the indirect system call stub cast to the specified type.
+ */
+auto pFn = MAKE_SYSCALL_INDIRECT(name, type)
+auto pFn = MAKE_SYSCALL_INDIRECT("NtCreateFile", func_t)
+
+/**
+ * @brief Retrieves a system call from a specific dll using indirect execution.
+ *
+ * @param dll  Path or name of the dll containing the system call. (e.g. win32u.dll, ntdll.dll)
+ * @param name The name of the system call.
+ * @param type The function signature/type of the system call.
+ *
+ * @return Pointer to the indirect system call stub cast to the specified type.
+ */
+auto pFn = MAKE_SYSCALL_INDIRECTEX(dll, name, type)
+auto pFn = MAKE_SYSCALL_INDIRECTEX("win32u.dll", "NtUserWaitMessage", func_t)
 ```
 
 ## Quick Example
@@ -79,6 +102,7 @@ int MainEntry() {
         NULL
     );
 
+    // Or MAKE_SYSCALL_INDIRECT
     auto pNtCreateFile = MAKE_SYSCALL("NtCreateFile", NtCreateFile_t);
     NTSTATUS status = pNtCreateFile(
         &fileHandle,

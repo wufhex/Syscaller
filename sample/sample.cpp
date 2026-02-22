@@ -30,6 +30,7 @@ int MainEntry() {
         NULL
     );
 
+    // Or MAKE_SYSCALL_INDIRECT
     auto pNtCreateFile = MAKE_SYSCALL("NtCreateFile", NtCreateFile_t);
     NTSTATUS status = pNtCreateFile(
         &fileHandle,
