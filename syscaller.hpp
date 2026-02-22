@@ -18,7 +18,7 @@
  * and follows the kernel syscall calling convention
  * (R10 for the first argument).
  *
- * @see SCCaller::GetSyscall, Syscall::Call, VirtualAlloc, VirtualProtect
+ * @see SCCaller::GetSyscall, VirtualAlloc, VirtualProtect
  */
 
 #pragma once
@@ -80,30 +80,6 @@ namespace SCMemUtil {
 
         SCMemUtil::memset(memblock, 0, totalSize);
         return memblock;
-    }
-
-    void* realloc(void* memblock, SIZE_T size) {
-        if (!g_MemProgHeap) {
-            g_MemProgHeap = GetProcessHeap();
-        }
-
-        if (!memblock) {
-            return malloc(size);
-        }
-
-        if (size == 0) {
-            if (memblock != NULL) {
-                free(memblock);
-            }
-            return NULL;
-        }
-
-        return HeapReAlloc(
-            g_MemProgHeap,
-            0,
-            memblock,
-            size
-        );
     }
 }
 
@@ -210,53 +186,6 @@ namespace SCFile {
         *outSize = fileSize;
         return TRUE;
     }
-
-    BOOL WriteFileRaw(
-        LPCWSTR      filePath,
-        const UINT8* buffer,
-        DWORD        size
-    ) {
-        if (!filePath || !buffer || size == 0) {
-            return FALSE;
-        }
-
-        DWORD pathSize = GetFullPathNameW(filePath, 0, NULL, NULL);
-        if (pathSize == 0) {
-            return FALSE;
-        }
-
-        LPWSTR fullPath = (LPWSTR)SCMemUtil::malloc(pathSize * sizeof(WCHAR));
-        if (!fullPath) {
-            return FALSE;
-        }
-
-        if (GetFullPathNameW(filePath, pathSize, fullPath, NULL) == 0) {
-            SCMemUtil::free(fullPath);
-            return FALSE;
-        }
-
-        HANDLE hFile = CreateFileW(
-            fullPath,
-            GENERIC_WRITE,
-            0,
-            NULL,
-            CREATE_ALWAYS,
-            FILE_ATTRIBUTE_NORMAL,
-            NULL
-        );
-
-        SCMemUtil::free(fullPath);
-
-        if (hFile == INVALID_HANDLE_VALUE) {
-            return FALSE;
-        }
-
-        DWORD bytesWritten = 0;
-        BOOL ok = WriteFile(hFile, buffer, size, &bytesWritten, NULL);
-        CloseHandle(hFile);
-
-        return (ok && bytesWritten == size);
-    }
 }
 
 namespace SCPE64 {
@@ -270,11 +199,6 @@ namespace SCPE64 {
         UINT32                   numSectionHeaders;
     } PEFile64;
 
-    typedef struct RVARange {
-        DWORD start;
-        DWORD end;
-    } RVARange;
-
     typedef enum PEFileError {
         PEF_SUCCESS,
         PEF_INVALID_ARGUMENT,
@@ -286,14 +210,6 @@ namespace SCPE64 {
         PEF_BUFFER_TOO_SMALL,
         PEF_MEM_ALLOC_FAILED
     } PEFileError;
-
-    typedef enum PESectionError {
-        PES_SUCCESS,
-        PES_INVALID_PARAM,
-        PES_INVALID_SECTION,
-        PES_CONTENT_INVALID,
-        PES_MEM_ALLOC_FAILED
-    } PESectionError;
 
     typedef enum RVAError {
         RVA_SUCCESS,
@@ -379,7 +295,6 @@ namespace SCPE64 {
         );
 
         if (!outPEFile->allSectionHeaders) {
-            // Allocation failed — handle gracefully
             return PEF_MEM_ALLOC_FAILED;
         }
 
@@ -590,96 +505,137 @@ namespace SCFetcher {
     }
 }
 
-namespace SCCaller {
-    typedef enum CallerError {
-        SCCL_OK,
-        SCCL_ALLOC_FAIL,
-        SCCL_PROTECT_UPDATE_FAIL
-    } CallerError;
+namespace SCMemAlignedPool {
+    struct PoolState {
+        UINT8*              currentPage = nullptr;
+        size_t              currentOffset = 0;
+        static const size_t PAGE_SIZE = 4096;
+    };
 
-    // 4C 8B D1         - mov r10, rcx        
-    // B8 DE C0 AD DE   - mov eax, 0xAAAAAAAA (placeholder)
-    // 0F 05            - syscall
-    // C3               - ret
-    const int g_SyscallIdOffset = 4;
-    unsigned char g_SyscallStubBytes[] = {
-        // Microsoft x64 C/C++ (1st arg in rcx) ->
-        // NT syscall calling convention (1st arg in r10)
-        // R10 holds the original RCX when entering kernel mode.
-        0x4C, 0x8B, 0xD1, 
+    inline PoolState& GetState() {
+        static PoolState state;
+        return state;
+    }
+
+    inline void* Alloc(size_t size) {
+        PoolState& state = GetState();
+        // Align size to 16 bytes
+        size = (size + 15) & ~15;
+
+        if (!state.currentPage || (state.currentOffset + size > PoolState::PAGE_SIZE)) {
+            // Allocate a new 4KB chunk
+            state.currentPage = (UINT8*)VirtualAlloc(
+                NULL,
+                PoolState::PAGE_SIZE,
+                MEM_COMMIT | MEM_RESERVE,
+                PAGE_EXECUTE_READWRITE
+            );
+
+            state.currentOffset = 0;
+            if (!state.currentPage) return nullptr;
+        }
+
+        // Bump the pointer and return the block
+        void* ptr = state.currentPage + state.currentOffset;
+        state.currentOffset += size;
+        return ptr;
+    }
+
+    inline void LockCurrentPage() {
+        PoolState& state = GetState();
+        if (state.currentPage) {
+            DWORD oldProtect = 0;
+            VirtualProtect(
+                state.currentPage, 
+                PoolState::PAGE_SIZE, 
+                PAGE_EXECUTE_READ, 
+                &oldProtect
+            );
+        }
+    }
+
+    inline void UnlockCurrentPage() {
+        PoolState& state = GetState();
+        if (state.currentPage) {
+            DWORD oldProtect = 0;
+            VirtualProtect(
+                state.currentPage, 
+                PoolState::PAGE_SIZE, 
+                PAGE_EXECUTE_READWRITE, 
+                &oldProtect
+            );
+        }
+    }
+}
+
+namespace SCCaller {
+    enum class SyscallMode {
+        Direct,
+        Indirect
+    };
+
+    // Direct Stub
+    // 4C 8B D1           - mov r10, rcx
+    // B8 AA AA AA AA     - mov eax, <SSN>
+    // 0F 05              - syscall
+    // C3                 - ret
+    unsigned char g_DirectStub[] = {
+        0x4C, 0x8B, 0xD1,
         0xB8, 0xAA, 0xAA, 0xAA, 0xAA,
         0x0F, 0x05,
         0xC3
     };
 
-    void* g_ExecutableStub = nullptr;
+    // Indirect Stub 
+    // 4C 8B D1                                - mov r10, rcx
+    // B8 AA AA AA AA                          - mov eax, <SSN>
+    // 49 BB 00 00 00 00 00 00 00 00           - mov r11, <gadget_address>
+    // 41 FF E3                                - jmp r11
+    unsigned char g_IndirectStub[] = {
+        0x4C, 0x8B, 0xD1,                             
+        0xB8, 0xAA, 0xAA, 0xAA, 0xAA,
+        0x49, 0xBB, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x41, 0xFF, 0xE3
+    };
 
-    CallerError Init() {
-        if (g_ExecutableStub) {
-            return SCCL_OK;
+    UINT_PTR FindSyscallGadget(LPCWSTR dll, LPCSTR func) {
+        HMODULE hNtdll = GetModuleHandleW(dll);
+        if (!hNtdll) return 0;
+
+        unsigned char* pFunc = (unsigned char*)GetProcAddress(hNtdll, func);
+        if (!pFunc) return 0;
+
+        // Scan for 0x0F 0x05 (syscall)
+        for (int i = 0; i < 64; i++) {
+            if (pFunc[i] == 0x0F && pFunc[i + 1] == 0x05) {
+                return (UINT_PTR)(pFunc + i);
+            }
         }
-
-        g_ExecutableStub = VirtualAlloc(
-            NULL,
-            sizeof(g_SyscallStubBytes),
-            MEM_COMMIT | MEM_RESERVE,
-            PAGE_READWRITE
-        );
-        if (!g_ExecutableStub) {
-            return SCCL_ALLOC_FAIL;
-        }
-
-        SCMemUtil::memcpy(g_ExecutableStub, g_SyscallStubBytes, sizeof(g_SyscallStubBytes));
-
-        DWORD oldProtect = 0;
-        if (!VirtualProtect(
-            g_ExecutableStub, 
-            sizeof(g_SyscallStubBytes), 
-            PAGE_EXECUTE_READ, 
-            &oldProtect)
-        ) {
-            return SCCL_PROTECT_UPDATE_FAIL;
-        }
-
-        return SCCL_OK;
-    }
-
-    void Shutdown() {
-        if (g_ExecutableStub) {
-            VirtualFree(g_ExecutableStub, 0, MEM_RELEASE);
-            g_ExecutableStub = nullptr;
-        }
+        return 0;
     }
 
     template <typename T>
-    T MakeSyscallPtr(UINT32 syscallId) {
-        if (!g_ExecutableStub) {
-            return nullptr;
+    T MakeSyscallPtr(const SyscallMode& mode, UINT32 syscallId, LPCWSTR dll, LPCSTR func) {
+        size_t stubSize = (mode == SyscallMode::Direct)
+            ? sizeof(g_DirectStub) : sizeof(g_IndirectStub);
+
+        void* pStubMem = SCMemAlignedPool::Alloc(stubSize);
+        if (!pStubMem) return nullptr;
+
+        if (mode == SyscallMode::Direct) {
+            SCMemUtil::memcpy(pStubMem, g_DirectStub, sizeof(g_DirectStub));
+            *(DWORD*)((unsigned char*)pStubMem + 4) = syscallId;
+        } else {
+            SCMemUtil::memcpy(pStubMem, g_IndirectStub, sizeof(g_IndirectStub));
+            *(DWORD*)((unsigned char*)pStubMem + 4) = syscallId;
+
+            UINT_PTR gadget = FindSyscallGadget(dll, func);
+            if (!gadget) return nullptr;
+
+            *(UINT_PTR*)((unsigned char*)pStubMem + 10) = gadget;
         }
 
-        DWORD oldProtect = 0;
-        if (!VirtualProtect(
-            g_ExecutableStub,
-            sizeof(g_SyscallStubBytes),
-            PAGE_EXECUTE_READWRITE,
-            &oldProtect)
-        ) {
-            return nullptr;
-        }
-
-        unsigned char* pStub = (unsigned char*)g_ExecutableStub;
-        *(DWORD*)(pStub + g_SyscallIdOffset) = syscallId;
-
-        if (!VirtualProtect(
-            g_ExecutableStub,
-            sizeof(g_SyscallStubBytes),
-            PAGE_EXECUTE_READ,
-            &oldProtect)
-        ) {
-            return nullptr;
-        }
-
-        return (T)g_ExecutableStub;
+        return (T)pStubMem;
     }
 }
 
@@ -691,18 +647,18 @@ public:
     }
 
     template<typename Fn>
-    static Fn Get(LPCWSTR path, LPCSTR name) {
+    static Fn Get(const SCCaller::SyscallMode& mode, LPCWSTR path, LPCSTR name) {
         static Fn fn = nullptr;
         if (!fn) {
             LPCWSTR actPath = path ? path : L"ntdll.dll";
-            fn = Syscall::Resolve<Fn>(actPath, name);
+            fn = Syscall::Resolve<Fn>(mode, actPath, name);
         }
         return fn;
     }
 
 private:
     template<typename T>
-    static T Resolve(LPCWSTR dll, LPCSTR name) {
+    static T Resolve(const SCCaller::SyscallMode& mode, LPCWSTR dll, LPCSTR name) {
         UINT32 id = 0;
 
         WCHAR fullDllPath[MAX_PATH];
@@ -714,18 +670,22 @@ private:
             return nullptr;
         }
 
+        SCMemAlignedPool::UnlockCurrentPage();
+
         if (SCFetcher::GetSyscall(fullDllPath, name, &id) != SCFetcher::SCFT_OK) {
             return nullptr;
         }
 
-        SCCaller::Init();
-        return SCCaller::MakeSyscallPtr<T>(id);
+        SCMemAlignedPool::UnlockCurrentPage();
+        auto ptr = SCCaller::MakeSyscallPtr<T>(mode, id, dll, name);
+        SCMemAlignedPool::LockCurrentPage();
+        return ptr;
     }
 
     static BOOL ResolveDllPath(
         LPCWSTR name,
         LPWSTR  outBuf,
-        DWORD   outBufSize  // in wchar_t count
+        DWORD   outBufSize
     ) {
         // If name already contains '\' or ':', treat as full path
         for (LPCWSTR p = name; *p; p++) {
@@ -771,7 +731,8 @@ private:
  *
  * @return Pointer to the system call function cast to the specified type.
  */
-#define MAKE_SYSCALL(name, type)        Syscall::Get<type>(nullptr, name)
+#define MAKE_SYSCALL(name, type) \
+    Syscall::Get<type>(SCCaller::SyscallMode::Direct, nullptr, name)
 
  /**
   * @brief Retrieves a system call from a specific dll.
@@ -782,4 +743,28 @@ private:
   *
   * @return Pointer to the system call function cast to the specified type.
   */
-#define MAKE_SYSCALLEX(dll, name, type) Syscall::Get<type>(dll, name)
+#define MAKE_SYSCALLEX(dll, name, type) \
+    Syscall::Get<type>(SCCaller::SyscallMode::Direct, dll, name)
+
+/**
+ * @brief Retrieves a system call from ntdll.dll using indirect execution.
+ *
+ * @param name The name of the system call.
+ * @param type The function signature/type of the system call.
+ *
+ * @return Pointer to the indirect system call stub cast to the specified type.
+ */
+#define MAKE_SYSCALL_INDIRECT(name, type) \
+    Syscall::Get<type>(SCCaller::SyscallMode::Indirect, nullptr, name)
+
+/**
+ * @brief Retrieves a system call from a specific dll using indirect execution.
+ *
+ * @param dll  Path or name of the dll containing the system call. (e.g. win32u.dll, ntdll.dll)
+ * @param name The name of the system call.
+ * @param type The function signature/type of the system call.
+ *
+ * @return Pointer to the indirect system call stub cast to the specified type.
+ */
+#define MAKE_SYSCALL_INDIRECTEX(dll, name, type) \
+    Syscall::Get<type>(SCCaller::SyscallMode::Indirect, dll, name)
