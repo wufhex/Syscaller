@@ -5,12 +5,12 @@
  * This library first fetches the syscall number for a target
  * Native API function by parsing core system DLLs.
  * It then generates and executes a dynamically patched assembly stub in memory
- * containing the corresponding 'syscall' instruction, 
+ * containing the corresponding 'syscall' instruction,
  * effectively bypassing high-level API wrappers like those found in kernel32.dll.
- * 
+ *
  * The code is also designed to work without CRT or any default libraries (/NODEFAULTLIB compatible).
- * 
- * This implementation requires some high level Windows API functions for 
+ *
+ * This implementation requires some high level Windows API functions for
  * memory allocation, memory protection managing, and file reading.
  * And the utility from the C++ standard for std::forward. (DOES NOT depend on CRT)
  *
@@ -40,33 +40,33 @@ namespace SCMemUtil {
     EXTERN_C void __stdcall RtlCopyMemory(void* Destination, const void* Source, size_t Length);
     EXTERN_C void __stdcall RtlFillMemory(void* Destination, size_t Length, unsigned char Fill);
 
-    HANDLE g_MemProgHeap = NULL;
+    inline HANDLE g_MemProgHeap = NULL;
 
-    void* memcpy(void* dest, const void* src, size_t n) {
+    inline void* memcpy(void* dest, const void* src, size_t n) {
         RtlCopyMemory(dest, src, n);
         return dest;
     }
 
-    void* memset(void* dest, int val, size_t n) {
+    inline void* memset(void* dest, int val, size_t n) {
         RtlFillMemory(dest, n, (unsigned char)val);
         return dest;
     }
 
-    void* malloc(SIZE_T size) {
+    inline void* malloc(SIZE_T size) {
         if (!g_MemProgHeap) {
             g_MemProgHeap = GetProcessHeap();
         }
         return HeapAlloc(g_MemProgHeap, 0, size);
     }
 
-    void free(void* memblock) {
+    inline void free(void* memblock) {
         if (!g_MemProgHeap) {
             g_MemProgHeap = GetProcessHeap();
         }
         HeapFree(g_MemProgHeap, 0, memblock);
     }
 
-    void* calloc(SIZE_T num, SIZE_T size) {
+    inline void* calloc(SIZE_T num, SIZE_T size) {
         if (num != 0 && size > SIZE_MAX / num) {
             return NULL;
         }
@@ -118,7 +118,7 @@ namespace SCSafeStr {
 }
 
 namespace SCFile {
-    BOOL ReadFileRaw(
+    inline BOOL ReadFileRaw(
         LPCWSTR filePath,
         UINT8** outBuffer,
         DWORD* outSize
@@ -195,7 +195,7 @@ namespace SCPE64 {
     typedef struct PEFile64 {
         IMAGE_DOS_HEADER         dosHeader;
         IMAGE_NT_HEADERS64       ntHeaders64;
-        IMAGE_SECTION_HEADER*    allSectionHeaders;
+        IMAGE_SECTION_HEADER* allSectionHeaders;
         UINT32                   numSectionHeaders;
     } PEFile64;
 
@@ -219,7 +219,7 @@ namespace SCPE64 {
     } RVAError;
 
     // Convert RVA -> file offset
-    DWORD RVAToRawOffset(
+    inline DWORD RVAToRawOffset(
         const PEFile64* parsedPE,
         UINT32          rva
     ) {
@@ -238,7 +238,7 @@ namespace SCPE64 {
         return 0xFFFFFFFF;
     }
 
-    PEFileError ParsePEFile64(
+    inline PEFileError ParsePEFile64(
         const UINT8* rawFile,
         SIZE_T       rawFileSize,
         PEFile64* outPEFile
@@ -311,7 +311,7 @@ namespace SCPE64 {
     }
 
     // Look up the RVA of an exported function by name
-    RVAError FindExportRVA(
+    inline RVAError FindExportRVA(
         UINT8* rawFile,
         SIZE_T          rawFileSize,
         const PEFile64* parsedPE,
@@ -373,7 +373,7 @@ namespace SCFetcher {
         SCFT_SYSCALL_NOT_FOUND  // Syscall id not found
     } FetchError;
 
-    DWORD FollowJumpChains(
+    inline DWORD FollowJumpChains(
         UINT8* raw,
         SIZE_T rawSize,
         const SCPE64::PEFile64* pe,
@@ -406,13 +406,13 @@ namespace SCFetcher {
         return currRVA;
     }
 
-    bool ExtractSyscallIdFromStub(
+    inline bool ExtractSyscallIdFromStub(
         const UINT8* code,
         SIZE_T       maxLen,
-        UINT32*      op_syscallId
+        UINT32* op_syscallId
     ) {
         // Scan the first few bytes of the stub
-        for (SIZE_T i = 0; i + 10 < maxLen; i++) { 
+        for (SIZE_T i = 0; i + 10 < maxLen; i++) {
 
             // On modern Windows, stubs often start with 'mov r10, rcx' (4C 8B D1)
             // The 'mov eax' (B8) might be at offset i=0 or i=3.
@@ -446,7 +446,7 @@ namespace SCFetcher {
         return false;
     }
 
-    FetchError GetSyscall(
+    inline FetchError GetSyscall(
         LPCWSTR dll,
         LPCSTR  exportName,
         UINT32* op_syscallId
@@ -489,7 +489,7 @@ namespace SCFetcher {
         UINT32 syscallId = 0;
         bool ok = ExtractSyscallIdFromStub(
             fileBuf + offset,
-            64, 
+            64,
             &syscallId
         );
 
@@ -507,7 +507,7 @@ namespace SCFetcher {
 
 namespace SCMemAlignedPool {
     struct PoolState {
-        UINT8*              currentPage = nullptr;
+        UINT8* currentPage = nullptr;
         size_t              currentOffset = 0;
         static const size_t PAGE_SIZE = 4096;
     };
@@ -546,9 +546,9 @@ namespace SCMemAlignedPool {
         if (state.currentPage) {
             DWORD oldProtect = 0;
             VirtualProtect(
-                state.currentPage, 
-                PoolState::PAGE_SIZE, 
-                PAGE_EXECUTE_READ, 
+                state.currentPage,
+                PoolState::PAGE_SIZE,
+                PAGE_EXECUTE_READ,
                 &oldProtect
             );
         }
@@ -559,9 +559,9 @@ namespace SCMemAlignedPool {
         if (state.currentPage) {
             DWORD oldProtect = 0;
             VirtualProtect(
-                state.currentPage, 
-                PoolState::PAGE_SIZE, 
-                PAGE_EXECUTE_READWRITE, 
+                state.currentPage,
+                PoolState::PAGE_SIZE,
+                PAGE_EXECUTE_READWRITE,
                 &oldProtect
             );
         }
@@ -579,7 +579,7 @@ namespace SCCaller {
     // B8 AA AA AA AA     - mov eax, <SSN>
     // 0F 05              - syscall
     // C3                 - ret
-    unsigned char g_DirectStub[] = {
+    inline unsigned char g_DirectStub[] = {
         0x4C, 0x8B, 0xD1,
         0xB8, 0xAA, 0xAA, 0xAA, 0xAA,
         0x0F, 0x05,
@@ -591,14 +591,14 @@ namespace SCCaller {
     // B8 AA AA AA AA                          - mov eax, <SSN>
     // 49 BB 00 00 00 00 00 00 00 00           - mov r11, <gadget_address>
     // 41 FF E3                                - jmp r11
-    unsigned char g_IndirectStub[] = {
-        0x4C, 0x8B, 0xD1,                             
+    inline unsigned char g_IndirectStub[] = {
+        0x4C, 0x8B, 0xD1,
         0xB8, 0xAA, 0xAA, 0xAA, 0xAA,
         0x49, 0xBB, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x41, 0xFF, 0xE3
     };
 
-    UINT_PTR FindSyscallGadget(LPCWSTR dll, LPCSTR func) {
+    inline UINT_PTR FindSyscallGadget(LPCWSTR dll, LPCSTR func) {
         HMODULE hNtdll = GetModuleHandleW(dll);
         if (!hNtdll) return 0;
 
@@ -615,7 +615,7 @@ namespace SCCaller {
     }
 
     template <typename T>
-    T MakeSyscallPtr(const SyscallMode& mode, UINT32 syscallId, LPCWSTR dll, LPCSTR func) {
+    inline T MakeSyscallPtr(const SyscallMode& mode, UINT32 syscallId, LPCWSTR dll, LPCSTR func) {
         size_t stubSize = (mode == SyscallMode::Direct)
             ? sizeof(g_DirectStub) : sizeof(g_IndirectStub);
 
@@ -625,7 +625,8 @@ namespace SCCaller {
         if (mode == SyscallMode::Direct) {
             SCMemUtil::memcpy(pStubMem, g_DirectStub, sizeof(g_DirectStub));
             *(DWORD*)((unsigned char*)pStubMem + 4) = syscallId;
-        } else {
+        }
+        else {
             SCMemUtil::memcpy(pStubMem, g_IndirectStub, sizeof(g_IndirectStub));
             *(DWORD*)((unsigned char*)pStubMem + 4) = syscallId;
 
@@ -706,7 +707,7 @@ private:
             return FALSE;
         }
 
-        size_t sysLen  = SCSafeStr::wlen(sysDir);
+        size_t sysLen = SCSafeStr::wlen(sysDir);
         size_t nameLen = SCSafeStr::wlen(name);
 
         // Check buffer
@@ -718,7 +719,7 @@ private:
         SCSafeStr::wcopy(outBuf, sysDir, outBufSize);
         SCSafeStr::wappend(outBuf, L"\\", outBufSize);
         SCSafeStr::wappend(outBuf, name, outBufSize);
-        
+
         return TRUE;
     }
 };
@@ -746,25 +747,25 @@ private:
 #define MAKE_SYSCALLEX(dll, name, type) \
     Syscall::Get<type>(SCCaller::SyscallMode::Direct, dll, name)
 
-/**
- * @brief Retrieves a system call from ntdll.dll using indirect execution.
- *
- * @param name The name of the system call.
- * @param type The function signature/type of the system call.
- *
- * @return Pointer to the indirect system call stub cast to the specified type.
- */
+  /**
+   * @brief Retrieves a system call from ntdll.dll using indirect execution.
+   *
+   * @param name The name of the system call.
+   * @param type The function signature/type of the system call.
+   *
+   * @return Pointer to the indirect system call stub cast to the specified type.
+   */
 #define MAKE_SYSCALL_INDIRECT(name, type) \
     Syscall::Get<type>(SCCaller::SyscallMode::Indirect, nullptr, name)
 
-/**
- * @brief Retrieves a system call from a specific dll using indirect execution.
- *
- * @param dll  Path or name of the dll containing the system call. (e.g. win32u.dll, ntdll.dll)
- * @param name The name of the system call.
- * @param type The function signature/type of the system call.
- *
- * @return Pointer to the indirect system call stub cast to the specified type.
- */
+   /**
+    * @brief Retrieves a system call from a specific dll using indirect execution.
+    *
+    * @param dll  Path or name of the dll containing the system call. (e.g. win32u.dll, ntdll.dll)
+    * @param name The name of the system call.
+    * @param type The function signature/type of the system call.
+    *
+    * @return Pointer to the indirect system call stub cast to the specified type.
+    */
 #define MAKE_SYSCALL_INDIRECTEX(dll, name, type) \
     Syscall::Get<type>(SCCaller::SyscallMode::Indirect, dll, name)
